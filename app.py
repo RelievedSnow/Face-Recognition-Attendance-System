@@ -1,6 +1,6 @@
 import cv2
 import os
-from flask import Flask, request, render_template, Response
+from flask import Flask, request, render_template
 from datetime import date, datetime
 import numpy as np
 from sklearn.neighbors import KNeighborsClassifier
@@ -39,31 +39,26 @@ def extract_faces(img):
     if img is not None and img.size != 0:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         face_points = face_detector.detectMultiScale(gray, 1.2, 5, minSize=(20, 20))
+        print(f"Face Points: {face_points}")  # Debugging output
         return face_points
     else:
+        print("No image data to process.")  # Debugging output
         return []
 
 # Identify face using ML model
 def identify_face(facearray):
+    model = joblib.load('static/face_recognition_model.pkl')
+    
     if facearray.size == 0:
-        print("Error: The facearray is empty!")
-        return "Unknown"  # Return "Unknown" if facearray is empty
-
-    try:
-        # Ensure the face array is reshaped to 2D (1 sample, multiple features)
-        facearray = facearray.reshape(1, -1)
-        print(f"Reshaped facearray for prediction: {facearray.shape}")  # Debugging output
-
-        model = joblib.load('static/face_recognition_model.pkl')
-        prediction = model.predict(facearray)
-        print(f"Prediction: {prediction}")  # Debugging output
-
-        return prediction[0]
-    except Exception as e:
-        print(f"Error during face identification: {e}")
-        return "Unknown"  # Return "Unknown" in case of any error
-
-
+        print("Error: facearray is empty!")
+        return "Unknown"  # Or handle this case appropriately
+    
+    # Ensure the face array is reshaped to 2D
+    facearray = facearray.reshape(1, -1)
+    print(f"Reshaped Face Array Shape: {facearray.shape}")  # Debugging output
+    prediction = model.predict(facearray)
+    print(f"Prediction: {prediction}")  # Debugging output
+    return prediction
 
 # A function which trains the model on all the faces available in faces folder
 def train_model():
@@ -101,88 +96,84 @@ def add_attendance(name):
         with open(f'Attendance/Attendance-{datetoday}.csv', 'a') as f:
             f.write(f'\n{username},{userid},{current_time}')
 
-# Video streaming generator function
-# Video streaming generator function
-def gen_frames():
-    cap = cv2.VideoCapture(0)
-    while True:
-        success, frame = cap.read()
-        if not success:
-            print("Failed to capture frame from camera")
-            break
-        else:
-            faces = extract_faces(frame)
-            if len(faces) > 0:
-                (x, y, w, h) = faces[0]
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (86, 32, 251), 1)
-                face = cv2.resize(frame[y:y + h, x:x + w], (50, 50))
-
-                if face.size == 0:
-                    print("Warning: Extracted face is empty.")
-                else:
-                    print(f"Extracted face shape: {face.shape}")  # Debugging output
-                    identified_person = identify_face(face.flatten())
-                    print(f"Identified Person: {identified_person}")  # Debugging output
-                    add_attendance(identified_person)
-                    cv2.putText(frame, f'{identified_person}', (x + 5, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame = buffer.tobytes()
-
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-
-
 # Our main page
 @app.route('/')
 def home():
     names, rolls, times, l = extract_attendance()
     return render_template('home.html', names=names, rolls=rolls, times=times, l=l, totalreg=totalreg())
 
-# Route to start the video stream
-@app.route('/video_feed')
-def video_feed():
-    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+# Our main Face Recognition functionality. 
+# This function will run when we click on Take Attendance Button.
+@app.route('/start', methods=['GET'])
+def start():
+    if 'face_recognition_model.pkl' not in os.listdir('static'):
+        return render_template('home.html', totalreg=totalreg(), mess='There is no trained model in the static folder. Please add a new face to continue.')
+
+    cap = cv2.VideoCapture(0)
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break  # Exit the loop if the frame is not captured correctly
+        
+        faces = extract_faces(frame)
+        if len(faces) > 0:
+            (x, y, w, h) = faces[0]
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (86, 32, 251), 1)
+            cv2.rectangle(frame, (x, y), (x+w, y-40), (86, 32, 251), -1)
+            
+            # Resize the detected face and reshape it before prediction
+            face = cv2.resize(frame[y:y+h, x:x+w], (50, 50))
+            print(f"Extracted Face Shape (Before Flattening): {face.shape}")  # Debugging output
+            identified_person = identify_face(face.flatten())[0]
+            
+            add_attendance(identified_person)
+            cv2.putText(frame, f'{identified_person}', (x+5, y-5), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        
+        cv2.imshow('Attendance', frame)
+        
+        # Close the window when 'q' is pressed
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    
+    cap.release()
+    cv2.destroyAllWindows()
+    
+    names, rolls, times, l = extract_attendance()
+    return render_template('home.html', names=names, rolls=rolls, times=times, l=l, totalreg=totalreg())
 
 # A function to add a new user.
 # This function will run when we add a new user.
 @app.route('/add', methods=['GET', 'POST'])
 def add():
-    try:
-        newusername = request.form['newusername']
-        newuserid = request.form['newuserid']
-        userimagefolder = 'static/faces/'+newusername+'_'+str(newuserid)
-        if not os.path.isdir(userimagefolder):
-            os.makedirs(userimagefolder)
-        i, j = 0, 0
-        cap = cv2.VideoCapture(0)
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            faces = extract_faces(frame)
-            for (x, y, w, h) in faces:
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 20), 2)
-                cv2.putText(frame, f'Images Captured: {i}/{nimgs}', (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 20), 2, cv2.LINE_AA)
-                if j % 5 == 0:
-                    name = f'{newusername}_{i}.jpg'
-                    cv2.imwrite(userimagefolder+'/'+name, frame[y:y+h, x:x+w])
-                    i += 1
-                j += 1
-            if j == nimgs*5:
-                break
-            cv2.imshow('Adding new User', frame)
-            if cv2.waitKey(1) == 10:
-                break
-        cap.release()
-        cv2.destroyAllWindows()
-        train_model()
-        names, rolls, times, l = extract_attendance()
-        return render_template('home.html', names=names, rolls=rolls, times=times, l=l, totalreg=totalreg())
-    except Exception as e:
-        print(f"Error: {e}")
-        return str(e)
+    newusername = request.form['newusername']
+    newuserid = request.form['newuserid']
+    userimagefolder = 'static/faces/'+newusername+'_'+str(newuserid)
+    if not os.path.isdir(userimagefolder):
+        os.makedirs(userimagefolder)
+    i, j = 0, 0
+    cap = cv2.VideoCapture(0)
+    while 1:
+        _, frame = cap.read()
+        faces = extract_faces(frame)
+        for (x, y, w, h) in faces:
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 20), 2)
+            cv2.putText(frame, f'Images Captured: {i}/{nimgs}', (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 20), 2, cv2.LINE_AA)
+            if j % 5 == 0:
+                name = newusername+'_'+str(i)+'.jpg'
+                cv2.imwrite(userimagefolder+'/'+name, frame[y:y+h, x:x+w])
+                i += 1
+            j += 1
+        if j == nimgs*5:
+            break
+        cv2.imshow('Adding new User', frame)
+        if cv2.waitKey(1) == 10:
+            break
+    cap.release()
+    cv2.destroyAllWindows()
+    print('Training Model')
+    train_model()
+    names, rolls, times, l = extract_attendance()
+    return render_template('home.html', names=names, rolls=rolls, times=times, l=l, totalreg=totalreg())
 
 # Our main function which runs the Flask App
 if __name__ == '__main__':
