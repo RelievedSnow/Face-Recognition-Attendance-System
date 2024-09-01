@@ -45,14 +45,19 @@ def extract_faces(img):
 
 # Identify face using ML model
 def identify_face(facearray):
-    model = joblib.load('static/face_recognition_model.pkl')
-    
     if facearray.size == 0:
-        return "Unknown"  # Or handle this case appropriately
-    
-    facearray = facearray.reshape(1, -1)
-    prediction = model.predict(facearray)
-    return prediction[0]
+        return "Unknown"  # Handle the case where no face data is available
+
+    # Ensure the face array is reshaped to 2D (1 sample, multiple features)
+    try:
+        facearray = facearray.reshape(1, -1)
+        model = joblib.load('static/face_recognition_model.pkl')
+        prediction = model.predict(facearray)
+        return prediction[0]
+    except Exception as e:
+        print(f"Error during face identification: {e}")
+        return "Unknown"  # Return "Unknown" in case of any error
+
 
 # A function which trains the model on all the faces available in faces folder
 def train_model():
@@ -103,9 +108,12 @@ def gen_frames():
                 (x, y, w, h) = faces[0]
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (86, 32, 251), 1)
                 face = cv2.resize(frame[y:y + h, x:x + w], (50, 50))
-                identified_person = identify_face(face.flatten())
-                add_attendance(identified_person)
-                cv2.putText(frame, f'{identified_person}', (x + 5, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+                # Only proceed if the face is valid and correctly extracted
+                if face.size != 0:
+                    identified_person = identify_face(face.flatten())
+                    add_attendance(identified_person)
+                    cv2.putText(frame, f'{identified_person}', (x + 5, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
             # Encode the frame to JPEG format
             ret, buffer = cv2.imencode('.jpg', frame)
@@ -114,6 +122,7 @@ def gen_frames():
             # Use generator to yield frames one by one
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
 
 # Our main page
 @app.route('/')
