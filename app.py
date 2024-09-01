@@ -1,6 +1,6 @@
 import cv2
 import os
-from flask import Flask, request, render_template
+from flask import Flask, request, render_template, Response
 from datetime import date, datetime
 import numpy as np
 from sklearn.neighbors import KNeighborsClassifier
@@ -39,10 +39,8 @@ def extract_faces(img):
     if img is not None and img.size != 0:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         face_points = face_detector.detectMultiScale(gray, 1.2, 5, minSize=(20, 20))
-        print(f"Face Points: {face_points}")  # Debugging output
         return face_points
     else:
-        print("No image data to process.")  # Debugging output
         return []
 
 # Identify face using ML model
@@ -50,15 +48,11 @@ def identify_face(facearray):
     model = joblib.load('static/face_recognition_model.pkl')
     
     if facearray.size == 0:
-        print("Error: facearray is empty!")
         return "Unknown"  # Or handle this case appropriately
     
-    # Ensure the face array is reshaped to 2D
     facearray = facearray.reshape(1, -1)
-    print(f"Reshaped Face Array Shape: {facearray.shape}")  # Debugging output
     prediction = model.predict(facearray)
-    print(f"Prediction: {prediction}")  # Debugging output
-    return prediction
+    return prediction[0]
 
 # A function which trains the model on all the faces available in faces folder
 def train_model():
@@ -96,50 +90,41 @@ def add_attendance(name):
         with open(f'Attendance/Attendance-{datetoday}.csv', 'a') as f:
             f.write(f'\n{username},{userid},{current_time}')
 
+# Video streaming generator function
+def gen_frames():
+    cap = cv2.VideoCapture(0)
+    while True:
+        success, frame = cap.read()
+        if not success:
+            break
+        else:
+            faces = extract_faces(frame)
+            if len(faces) > 0:
+                (x, y, w, h) = faces[0]
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (86, 32, 251), 1)
+                face = cv2.resize(frame[y:y + h, x:x + w], (50, 50))
+                identified_person = identify_face(face.flatten())
+                add_attendance(identified_person)
+                cv2.putText(frame, f'{identified_person}', (x + 5, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+            # Encode the frame to JPEG format
+            ret, buffer = cv2.imencode('.jpg', frame)
+            frame = buffer.tobytes()
+
+            # Use generator to yield frames one by one
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
 # Our main page
 @app.route('/')
 def home():
     names, rolls, times, l = extract_attendance()
     return render_template('home.html', names=names, rolls=rolls, times=times, l=l, totalreg=totalreg())
 
-# Our main Face Recognition functionality. 
-# This function will run when we click on Take Attendance Button.
-@app.route('/start', methods=['GET'])
-def start():
-    if 'face_recognition_model.pkl' not in os.listdir('static'):
-        return render_template('home.html', totalreg=totalreg(), mess='There is no trained model in the static folder. Please add a new face to continue.')
-
-    cap = cv2.VideoCapture(0)
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break  # Exit the loop if the frame is not captured correctly
-        
-        faces = extract_faces(frame)
-        if len(faces) > 0:
-            (x, y, w, h) = faces[0]
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (86, 32, 251), 1)
-            cv2.rectangle(frame, (x, y), (x+w, y-40), (86, 32, 251), -1)
-            
-            # Resize the detected face and reshape it before prediction
-            face = cv2.resize(frame[y:y+h, x:x+w], (50, 50))
-            print(f"Extracted Face Shape (Before Flattening): {face.shape}")  # Debugging output
-            identified_person = identify_face(face.flatten())[0]
-            
-            add_attendance(identified_person)
-            cv2.putText(frame, f'{identified_person}', (x+5, y-5), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        
-        cv2.imshow('Attendance', frame)
-        
-        # Close the window when 'q' is pressed
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-    
-    cap.release()
-    cv2.destroyAllWindows()
-    
-    names, rolls, times, l = extract_attendance()
-    return render_template('home.html', names=names, rolls=rolls, times=times, l=l, totalreg=totalreg())
+# Route to start the video stream
+@app.route('/video_feed')
+def video_feed():
+    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 # A function to add a new user.
 # This function will run when we add a new user.
@@ -153,14 +138,17 @@ def add():
             os.makedirs(userimagefolder)
         i, j = 0, 0
         cap = cv2.VideoCapture(0)
-        while 1:
-            _, frame = cap.read()
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
             faces = extract_faces(frame)
             for (x, y, w, h) in faces:
                 cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 20), 2)
                 cv2.putText(frame, f'Images Captured: {i}/{nimgs}', (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 20), 2, cv2.LINE_AA)
                 if j % 5 == 0:
-                    name = newusername+'_'+str(i)+'.jpg'
+                    name = f'{newusername}_{i}.jpg'
                     cv2.imwrite(userimagefolder+'/'+name, frame[y:y+h, x:x+w])
                     i += 1
                 j += 1
@@ -171,7 +159,6 @@ def add():
                 break
         cap.release()
         cv2.destroyAllWindows()
-        print('Training Model')
         train_model()
         names, rolls, times, l = extract_attendance()
         return render_template('home.html', names=names, rolls=rolls, times=times, l=l, totalreg=totalreg())
