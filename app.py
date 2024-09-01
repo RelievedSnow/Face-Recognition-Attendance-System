@@ -46,17 +46,23 @@ def extract_faces(img):
 # Identify face using ML model
 def identify_face(facearray):
     if facearray.size == 0:
-        return "Unknown"  # Handle the case where no face data is available
+        print("Error: The facearray is empty!")
+        return "Unknown"  # Return "Unknown" if facearray is empty
 
-    # Ensure the face array is reshaped to 2D (1 sample, multiple features)
     try:
+        # Ensure the face array is reshaped to 2D (1 sample, multiple features)
         facearray = facearray.reshape(1, -1)
+        print(f"Reshaped facearray for prediction: {facearray.shape}")  # Debugging output
+
         model = joblib.load('static/face_recognition_model.pkl')
         prediction = model.predict(facearray)
+        print(f"Prediction: {prediction}")  # Debugging output
+
         return prediction[0]
     except Exception as e:
         print(f"Error during face identification: {e}")
         return "Unknown"  # Return "Unknown" in case of any error
+
 
 
 # A function which trains the model on all the faces available in faces folder
@@ -96,11 +102,13 @@ def add_attendance(name):
             f.write(f'\n{username},{userid},{current_time}')
 
 # Video streaming generator function
+# Video streaming generator function
 def gen_frames():
     cap = cv2.VideoCapture(0)
     while True:
         success, frame = cap.read()
         if not success:
+            print("Failed to capture frame from camera")
             break
         else:
             faces = extract_faces(frame)
@@ -109,17 +117,18 @@ def gen_frames():
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (86, 32, 251), 1)
                 face = cv2.resize(frame[y:y + h, x:x + w], (50, 50))
 
-                # Only proceed if the face is valid and correctly extracted
-                if face.size != 0:
+                if face.size == 0:
+                    print("Warning: Extracted face is empty.")
+                else:
+                    print(f"Extracted face shape: {face.shape}")  # Debugging output
                     identified_person = identify_face(face.flatten())
+                    print(f"Identified Person: {identified_person}")  # Debugging output
                     add_attendance(identified_person)
                     cv2.putText(frame, f'{identified_person}', (x + 5, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
-            # Encode the frame to JPEG format
             ret, buffer = cv2.imencode('.jpg', frame)
             frame = buffer.tobytes()
 
-            # Use generator to yield frames one by one
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
